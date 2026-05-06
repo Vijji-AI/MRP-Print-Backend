@@ -1,0 +1,114 @@
+// PrintMRP Prisma schema
+// Mirrors the frontend's data shape one-to-one so wiring is straightforward.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id                 String     @id @default(cuid())
+  name               String
+  email              String     @unique
+  passwordHash       String
+  organization       String?
+  phone              String?
+  subscriptionStatus String     @default("inactive") // inactive | active | expired
+  subscriptionUntil  DateTime?
+  totalPrints        Int        @default(0)
+  // Max number of samples this customer can create. New customers default to 3;
+  // admin can override per-customer in the Edit Customer modal. Hard-enforced
+  // server-side in POST /api/samples.
+  maxSamples         Int        @default(3)
+  // Max number of distinct browsers/devices that can be logged in. New customers
+  // default to 2; admin can override per-customer. Enforced at login time and
+  // each authenticated request verifies the device record still exists.
+  maxDevices         Int        @default(2)
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  samples   Sample[]
+  payments  Payment[]
+  settings  Settings?
+  printRuns PrintRun[]
+  devices   Device[]
+}
+
+// One row per (customer, browser). The deviceId column holds the random ID the
+// browser persists in localStorage. Deleting a row revokes that browser.
+model Device {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  deviceId   String
+  userAgent  String?
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  @@unique([customerId, deviceId])
+  @@index([customerId])
+}
+
+model Admin {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+model Sample {
+  id          String   @id @default(cuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  width       Int      // mm
+  height      Int      // mm
+  fields      Json     // SampleField[] from the frontend
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([customerId])
+}
+
+model Payment {
+  id         String    @id @default(cuid())
+  customerId String
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  amount     Int       // NPR
+  method     String    // khalti | esewa
+  txnRef     String    @unique
+  status     String    @default("pending") // pending | verified | rejected
+  planMonths Int
+  createdAt  DateTime  @default(now())
+  verifiedAt DateTime?
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model Settings {
+  customerId String   @id
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  paperSize  String   @default("Label-50x30")
+  printer    String   @default("System default")
+  copies     Int      @default(1)
+  updatedAt  DateTime @updatedAt
+}
+
+model PrintRun {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sampleId   String?
+  sampleName String
+  labelCount Int
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+}
