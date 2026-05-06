@@ -13,6 +13,12 @@ import { errorHandler } from './middleware/error';
 export function createApp() {
   const app = express();
 
+  // Trust the first reverse proxy in front of us (Caddy / nginx / Traefik)
+  // so req.ip and X-Forwarded-* headers reflect the real client. Required
+  // for the auth rate limiter to key on the actual user IP rather than the
+  // proxy's loopback. Set to 0 if you ever expose the backend directly.
+  app.set('trust proxy', 1);
+
   // 10mb fits a downsized base64-encoded label image for the vision endpoint.
   // Tighter request validation happens per-route via Zod.
   app.use(express.json({ limit: '10mb' }));
