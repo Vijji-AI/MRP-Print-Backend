@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
-import { customerDTO, deviceDTO, paymentDTO } from '../lib/dto';
+import { customerDTO, deviceDTO, paymentDTO, printRunDTO, adminDTO } from '../lib/dto';
 import { hashPassword } from '../lib/passwords';
 import { conflict, notFound } from '../lib/errors';
 import { requireAuth, requireAdmin } from '../middleware/auth';
@@ -195,11 +195,71 @@ router.post(
   },
 );
 
+// ---------- Print runs (admin view) ----------
+
+router.get('/prints', async (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const list = await prisma.printRun.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: { customer: { select: { name: true, email: true } } },
+    });
+    res.json(list.map((r) => ({
+      ...printRunDTO(r),
+      customerName: r.customer.name,
+      customerEmail: r.customer.email,
+    })));
+  } catch (e) { next(e); }
+});
+
+// ---------- Admin user management ----------
+
+const adminCreateSchema = z.object({
+  name: z.string().min(1).max(120),
+  email: z.string().email().toLowerCase(),
+  password: z.string().min(6).max(200),
+});
+
+router.get('/admins', async (_req, res, next) => {
+  try {
+    const list = await prisma.admin.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(list.map(adminDTO));
+  } catch (e) { next(e); }
+});
+
+router.post('/admins', validate(adminCreateSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof adminCreateSchema>;
+    const existing = await prisma.admin.findUnique({ where: { email: body.email } });
+    if (existing) throw conflict('An admin with that email already exists.');
+    const passwordHash = await hashPassword(body.password);
+    const created = await prisma.admin.create({
+      data: { name: body.name, email: body.email, passwordHash },
+    });
+    res.status(201).json(adminDTO(created));
+  } catch (e) { next(e); }
+});
+
+router.delete('/admins/:id', async (req, res, next) => {
+  try {
+    // Prevent an admin from deleting themselves.
+    if (req.auth!.sub === req.params.id) {
+      res.status(400).json({ error: 'You cannot delete your own admin account.' });
+      return;
+    }
+    const a = await prisma.admin.findUnique({ where: { id: req.params.id } });
+    if (!a) throw notFound('Admin not found');
+    await prisma.admin.delete({ where: { id: a.id } });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // ---------- Dashboard ----------
 
 router.get('/dashboard', async (_req, res, next) => {
   try {
-    const [customers, payments, samplesCount, prints, recentPayments] = await Promise.all([
+    const [customers, payments, samplesCount, prints, recentPayments, recentPrintRuns] = await Promise.all([
       prisma.customer.findMany({ orderBy: { totalPrints: 'desc' }, take: 6 }),
       prisma.payment.findMany(),
       prisma.sample.count(),
@@ -208,6 +268,11 @@ router.get('/dashboard', async (_req, res, next) => {
         orderBy: { createdAt: 'desc' },
         take: 6,
         include: { customer: { select: { name: true } } },
+      }),
+      prisma.printRun.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        include: { customer: { select: { name: true, email: true } } },
       }),
     ]);
 
@@ -226,6 +291,11 @@ router.get('/dashboard', async (_req, res, next) => {
       totalPrints: prints._sum.totalPrints ?? 0,
       recentPayments: recentPayments.map(paymentDTO),
       topCustomers: customers.map(customerDTO),
+      recentPrintRuns: recentPrintRuns.map((r) => ({
+        ...printRunDTO(r),
+        customerName: r.customer.name,
+        customerEmail: r.customer.email,
+      })),
     });
   } catch (e) { next(e); }
 });
