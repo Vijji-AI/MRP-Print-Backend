@@ -31,11 +31,33 @@ model Customer {
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
-  samples   Sample[]
-  payments  Payment[]
-  settings  Settings?
-  printRuns PrintRun[]
-  devices   Device[]
+  samples    Sample[]
+  payments   Payment[]
+  settings   Settings?
+  printRuns  PrintRun[]
+  devices    Device[]
+  paperSizes PaperSize[]
+}
+
+// Customer-owned custom paper / label sizes. Built-in sizes (A4, Letter,
+// Label-50x30, etc.) live in the frontend as read-only constants so customers
+// can never accidentally delete them. This table is for additional sizes
+// they define themselves (e.g. "Custom 80x40 sticker").
+model PaperSize {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name       String
+  widthMm    Int
+  heightMm   Int
+  // true = continuous label paper (one label = one page); false = sheet paper
+  // (A4-style; multiple labels tile per page).
+  isLabel    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([customerId, name])
+  @@index([customerId])
 }
 
 // One row per (customer, browser). The deviceId column holds the random ID the
