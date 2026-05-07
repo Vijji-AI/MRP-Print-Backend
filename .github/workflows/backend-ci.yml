@@ -1,0 +1,149 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'prisma/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'Dockerfile'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'prisma/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'Dockerfile'
+
+jobs:
+  test:
+    name: Build and Test Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: printmrp
+          POSTGRES_PASSWORD: printmrp
+          POSTGRES_DB: printmrp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Build application
+        run: npm run build
+        env:
+          DATABASE_URL: "postgresql://printmrp:printmrp@localhost:5432/printmrp?schema=public"
+
+      - name: Build Docker image
+        run: docker build -t printmrp-backend:latest .
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Docker image to Docker Hub
+        if: github.event_name == 'push'
+        run: |
+          docker tag printmrp-backend:latest ${{ secrets.DOCKER_USERNAME }}/mrp-backend:latest
+          docker tag printmrp-backend:latest ${{ secrets.DOCKER_USERNAME }}/mrp-backend:${{ github.sha }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/mrp-backend:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/mrp-backend:${{ github.sha }}
+
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to VPS via SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
+          VPS_PROJECT_PATH: ${{ secrets.VPS_PROJECT_PATH }}
+        run: |
+          # Create SSH key file
+          mkdir -p ~/.ssh
+          echo "$VPS_DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # Add VPS to known_hosts (skip host key check)
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          # Deploy via SSH
+          ssh -i ~/.ssh/deploy_key "$VPS_USER@$VPS_HOST" << 'SSHSCRIPT'
+          set -e
+
+          echo "🚀 Starting deployment..."
+
+          # Navigate to project
+          cd "$VPS_PROJECT_PATH" || exit 1
+
+          # Pull latest code
+          echo "📦 Pulling latest code..."
+          git fetch origin
+          git checkout master
+          git pull origin master
+
+          # Copy environment config if needed
+          if [ ! -f .env ]; then
+            echo "⚠️  .env not found, using defaults from .env.example"
+            cp .env.example .env
+          fi
+
+          # Deploy with docker-compose
+          echo "🐳 Deploying with Docker..."
+          docker compose -f docker-compose.backend.yml down
+          docker compose -f docker-compose.backend.yml up -d --build
+
+          # Wait for service to be healthy
+          echo "⏳ Waiting for backend to be healthy..."
+          for i in {1..30}; do
+            if curl -s http://localhost:4000/health | grep -q "ok"; then
+              echo "✅ Backend is healthy!"
+              exit 0
+            fi
+            echo "  Attempt $i/30... waiting..."
+            sleep 2
+          done
+
+          echo "❌ Backend health check failed"
+          exit 1
+          SSHSCRIPT
+        if: env.VPS_HOST != '' && env.VPS_USER != '' && env.VPS_DEPLOY_KEY != ''
