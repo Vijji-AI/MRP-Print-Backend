@@ -46,6 +46,7 @@ export const adminDTO = (a: Admin) => ({
   id: a.id,
   name: a.name,
   email: a.email,
+  isSuperAdmin: a.email === 'admin@printmrp.app',
 });
 
 export const sampleDTO = (s: Sample) => ({

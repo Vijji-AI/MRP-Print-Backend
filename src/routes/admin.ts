@@ -221,9 +221,14 @@ const adminCreateSchema = z.object({
   password: z.string().min(6).max(200),
 });
 
-router.get('/admins', async (_req, res, next) => {
+router.get('/admins', async (req, res, next) => {
   try {
-    const list = await prisma.admin.findMany({ orderBy: { createdAt: 'desc' } });
+    const viewerIsSuperAdmin = req.auth!.email === 'admin@printmrp.app';
+    const list = await prisma.admin.findMany({
+      orderBy: { createdAt: 'desc' },
+      // Regular admins cannot see the super admin row.
+      where: viewerIsSuperAdmin ? undefined : { email: { not: 'admin@printmrp.app' } },
+    });
     res.json(list.map(adminDTO));
   } catch (e) { next(e); }
 });
@@ -250,7 +255,44 @@ router.delete('/admins/:id', async (req, res, next) => {
     }
     const a = await prisma.admin.findUnique({ where: { id: req.params.id } });
     if (!a) throw notFound('Admin not found');
+    // The super admin account is protected — it can never be deleted.
+    if (a.email === 'admin@printmrp.app') {
+      res.status(403).json({ error: 'The super admin account cannot be deleted.' });
+      return;
+    }
     await prisma.admin.delete({ where: { id: a.id } });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// ---------- Password reset ----------
+
+const resetPasswordSchema = z.object({
+  password: z.string().min(6, 'Password must be at least 6 characters').max(200),
+});
+
+// Customer password reset — any admin can do this.
+router.post('/customers/:id/reset-password', validate(resetPasswordSchema), async (req, res, next) => {
+  try {
+    const c = await prisma.customer.findUnique({ where: { id: req.params.id } });
+    if (!c) throw notFound('Customer not found');
+    const passwordHash = await hashPassword(req.body.password);
+    await prisma.customer.update({ where: { id: c.id }, data: { passwordHash } });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+// Admin password reset — only admin@printmrp.app can reset other admin passwords.
+router.post('/admins/:id/reset-password', validate(resetPasswordSchema), async (req, res, next) => {
+  try {
+    if (req.auth!.email !== 'admin@printmrp.app') {
+      res.status(403).json({ error: 'Only admin@printmrp.app can reset admin passwords.' });
+      return;
+    }
+    const a = await prisma.admin.findUnique({ where: { id: req.params.id } });
+    if (!a) throw notFound('Admin not found');
+    const passwordHash = await hashPassword(req.body.password);
+    await prisma.admin.update({ where: { id: a.id }, data: { passwordHash } });
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
