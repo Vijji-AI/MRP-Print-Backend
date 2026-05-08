@@ -19,6 +19,9 @@ RUN npx prisma generate
 # Compile TypeScript
 COPY tsconfig.json ./
 COPY src ./src
+# Bundled assets (Devanagari TTFs for PDF labels). Copied separately so the
+# runtime stage can pull them in without dragging the whole src tree.
+COPY fonts ./fonts
 RUN npm run build
 
 # Strip dev deps for what the runtime needs
@@ -37,6 +40,7 @@ ENV PORT=4000
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/fonts ./fonts
 COPY --from=builder /app/package.json ./package.json
 
 EXPOSE 4000
