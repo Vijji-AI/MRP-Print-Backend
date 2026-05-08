@@ -66,15 +66,25 @@ jobs:
       - name: Build Docker image
         run: docker build -t printmrp-backend:latest .
 
+      # Docker Hub steps are optional — they only run if you've set
+      # DOCKER_USERNAME (and matching DOCKER_PASSWORD) as repo secrets. Without
+      # them the workflow skips this section instead of failing, because the
+      # actual VPS deploy below builds the image locally on the box and doesn't
+      # pull from Docker Hub. Adding Docker Hub later just means setting the
+      # two secrets — no workflow change needed.
       - name: Log in to Docker Hub
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.DOCKER_USERNAME != ''
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Push Docker image to Docker Hub
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.DOCKER_USERNAME != ''
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         run: |
           docker tag printmrp-backend:latest ${{ secrets.DOCKER_USERNAME }}/mrp-backend:latest
           docker tag printmrp-backend:latest ${{ secrets.DOCKER_USERNAME }}/mrp-backend:${{ github.sha }}
