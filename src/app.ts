@@ -42,7 +42,7 @@ export function createApp() {
       ok: true,
       timestamp: new Date().toISOString(),
       service: 'PrintMRP API',
-      version: '1.0.2',
+      version: '1.0.3',
       status: 'operational',
       environment: process.env.NODE_ENV || 'development',
       uptime: Math.floor(process.uptime()),
@@ -51,7 +51,8 @@ export function createApp() {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
         external: Math.round(process.memoryUsage().external / 1024 / 1024)
-      }
+      },
+      autoDeployed: true
     });
   });
 
