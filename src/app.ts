@@ -42,7 +42,7 @@ export function createApp() {
       ok: true,
       timestamp: new Date().toISOString(),
       service: 'PrintMRP API',
-      version: '1.0.3',
+      version: '1.0.4',
       status: 'operational',
       environment: process.env.NODE_ENV || 'development',
       uptime: Math.floor(process.uptime()),
