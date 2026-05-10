@@ -35,7 +35,7 @@ services:
     volumes:
       - printmrp_pgdata:/var/lib/postgresql/data
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U printmrp -d printmrp"]
       interval: 5s
@@ -44,7 +44,7 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
     container_name: printmrp-api
     restart: unless-stopped
     environment:
@@ -61,13 +61,15 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${APP_PORT:-4000}:4000"
+      - "${APP_PORT:-4002}:4000"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health"]
       interval: 10s
       timeout: 3s
       retries: 6
       start_period: 30s
+    networks:
+      - default
 
 volumes:
   printmrp_pgdata:
