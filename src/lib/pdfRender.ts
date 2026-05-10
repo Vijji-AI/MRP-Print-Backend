@@ -145,19 +145,25 @@ async function renderOneLabel(
   widthPt: number,
   heightPt: number,
 ): Promise<void> {
-  // ~1.5 mm padding on every edge — matches the frontend's `1.5mm` print
-  // padding closely enough that side-by-side comparisons look right.
+  // Fixed 1.5mm inner padding regardless of paper size — paper size only
+  // dictates page dimensions; it does NOT scale type or barcode sizes. The
+  // customer's per-field fontSize is the sole source of truth for text size.
   const padPt = mmToPt(1.5);
   let yCursor = padPt;
   const innerWidth = widthPt - 2 * padPt;
   const remainingY = () => heightPt - yCursor - padPt;
+
+  // Fixed barcode / QR target sizes in mm. Still clamped to remaining height
+  // so they never spill off the label, but no longer scaled by paper area.
+  const barcodeMaxMm = 8;
+  const qrMaxMm = 10;
 
   for (const f of fields) {
     if (remainingY() <= 0) break;     // out of room — skip the rest, don't overflow
 
     if (f.kind === 'barcode') {
       const value = resolveValue(f, row) || '0000000';
-      const barcodeHeightPt = Math.min(mmToPt(8), remainingY()); // ~8mm tall
+      const barcodeHeightPt = Math.min(mmToPt(barcodeMaxMm), remainingY());
       const png = await renderBarcodePNG(value);
       doc.image(png, padPt, yCursor, {
         width: innerWidth,
@@ -169,7 +175,7 @@ async function renderOneLabel(
 
     if (f.kind === 'qrcode') {
       const value = resolveValue(f, row) || ' ';
-      const qrSizePt = Math.min(mmToPt(10), remainingY());
+      const qrSizePt = Math.min(mmToPt(qrMaxMm), remainingY());
       const png = await renderQRPNG(value);
       // Center horizontally to match the frontend's preview.
       doc.image(png, (widthPt - qrSizePt) / 2, yCursor, {
@@ -180,7 +186,7 @@ async function renderOneLabel(
       continue;
     }
 
-    // Text-like field. Mirror LabelPreview's defaults.
+    // Text-like field.
     const value = resolveValue(f, row);
     const text =
       f.kind === 'mrp'
@@ -188,6 +194,10 @@ async function renderOneLabel(
         : (value || ''); // empty when unbound — just skip blank lines on label
     if (!text) continue;
 
+    // Per-field fontSize from the sample editor is the SOLE source of truth.
+    // We never scale or override it based on paper size — what the customer
+    // sets is exactly what prints. Only when a field has no fontSize at all
+    // do we fall back to a small fixed default for that field kind.
     const fontSizePx = f.fontSize ?? defaultPxFor(f.kind);
     const fontSizePt = pxToPt(fontSizePx);
     const isBold = !!f.bold || f.kind === 'mrp' || f.kind === 'product';
@@ -214,6 +224,11 @@ async function renderOneLabel(
   }
 }
 
+/**
+ * Fallback px size used ONLY when a field has no `fontSize` set at all.
+ * Returns a plain constant per field kind — no paper-size scaling. The
+ * customer's authored `fontSize` (set in the sample editor) always wins.
+ */
 function defaultPxFor(kind: FieldKind): number {
   switch (kind) {
     case 'product': return 14;
