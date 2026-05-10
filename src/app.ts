@@ -36,7 +36,14 @@ export function createApp() {
   );
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, time: new Date().toISOString() });
+    res.json({
+      ok: true,
+      time: new Date().toISOString(),
+      service: 'PrintMRP API',
+      version: '1.0.1',
+      status: 'operational',
+      uptime: process.uptime()
+    });
   });
 
   app.use('/api/auth', authRoutes);
