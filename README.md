@@ -18,6 +18,7 @@ admin portal (verify payments, manage customers, create samples on their behalf)
 
 ## Quick start — one commands
 
+Testing
 You need **Docker Desktop** (or Docker Engine on Linux) installed.
 
 ```bash
