@@ -52,7 +52,8 @@ export function createApp() {
         heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
         external: Math.round(process.memoryUsage().external / 1024 / 1024)
       },
-      autoDeployed: true
+      autoDeployed: true,
+      test:"123"
     });
   });
 
