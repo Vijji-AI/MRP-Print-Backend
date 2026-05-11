@@ -10,9 +10,11 @@ import printsRoutes from './routes/prints';
 import adminRoutes from './routes/admin';
 import { errorHandler } from './middleware/error';
 
+const startTime = Date.now();
+
 export function createApp() {
   const app = express();
-//test
+
   // Trust the first reverse proxy in front of us (Caddy / nginx / Traefik)
   // so req.ip and X-Forwarded-* headers reflect the real client. Required
   // for the auth rate limiter to key on the actual user IP rather than the
@@ -36,7 +38,23 @@ export function createApp() {
   );
 
   app.get('/health', (_req, res) => {
-    res.json({ ok: true, time: new Date().toISOString() });
+    res.json({
+      ok: true,
+      timestamp: new Date().toISOString(),
+      service: 'PrintMRP API',
+      version: '1.0.4',
+      status: 'operational',
+      environment: process.env.NODE_ENV || 'development',
+      uptime: Math.floor(process.uptime()),
+      startedAt: new Date(startTime).toISOString(),
+      memoryUsage: {
+        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        external: Math.round(process.memoryUsage().external / 1024 / 1024)
+      },
+      autoDeployed: true,
+      test:"123"
+    });
   });
 
   app.use('/api/auth', authRoutes);
