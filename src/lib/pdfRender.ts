@@ -89,8 +89,15 @@ export interface RenderInput {
 const MM_PER_INCH = 25.4;
 const PT_PER_INCH = 72;
 const mmToPt = (mm: number) => (mm / MM_PER_INCH) * PT_PER_INCH;
-// LabelPreview uses px sizes authored on screen. Convert px→pt at 96 DPI.
-const pxToPt = (px: number) => px * (72 / 96);
+// LabelPreview uses px sizes authored on screen. The strict 96 DPI
+// conversion (px * 0.75) prints visibly too big on thermal labels because
+// modern displays render CSS px at higher effective DPI — what looks
+// "right" in the editor lands ~2x oversized on a 203 DPI thermal head.
+// PRINT_FONT_COMPENSATION halves the rendered point size so what the
+// customer authors in the sample editor matches what comes off the printer.
+// This is the SOLE adjustment applied to font size; nothing else scales it.
+const PRINT_FONT_COMPENSATION = 0.5;
+const pxToPt = (px: number) => px * (72 / 96) * PRINT_FONT_COMPENSATION;
 
 // ---------- Public entry point ----------
 
@@ -243,8 +250,17 @@ function defaultPxFor(kind: FieldKind): number {
 
 function resolveValue(f: SampleField, row: LabelRow): string {
   if (f.kind === 'text') return f.staticValue ?? '';
-  if (f.columnKey && row[f.columnKey] !== undefined && row[f.columnKey] !== null) {
-    return String(row[f.columnKey]);
+  // Use the Excel value only when it's actually present AND non-blank.
+  // Empty strings and whitespace-only cells must fall through to the
+  // static value — otherwise blank Excel cells silently produce blank
+  // labels and the "Fallback / static value" the customer authored is
+  // never honored.
+  if (f.columnKey) {
+    const raw = row[f.columnKey];
+    if (raw !== undefined && raw !== null) {
+      const s = String(raw).trim();
+      if (s !== '') return s;
+    }
   }
   return f.staticValue ?? '';
 }
