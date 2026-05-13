@@ -99,11 +99,79 @@ const mmToPt = (mm: number) => (mm / MM_PER_INCH) * PT_PER_INCH;
 const PRINT_FONT_COMPENSATION = 0.5;
 const pxToPt = (px: number) => px * (72 / 96) * PRINT_FONT_COMPENSATION;
 
+// ---------- Markdown sentinel expansion ----------
+//
+// When the customer uses the markdown editor (SampleEditorForm step 2), the
+// sample is saved as a single-element fields array:
+//   { id: '__markdown__', kind: 'custom', label: '__markdown__',
+//     staticValue: <md>, columnKey: JSON.stringify(fontSizes) }
+//
+// We expand it to real SampleField[] here so the rest of the renderer works
+// unchanged. Font sizes are read from columnKey (JSON) and fall back to
+// defaults when missing (e.g. older saves without custom sizes).
+
+interface MdSizes { h1: number; h2: number; h3: number; h4: number; plain: number; bold: number }
+const DEFAULT_MD_SIZES: MdSizes = { h1: 24, h2: 18, h3: 14, h4: 12, plain: 11, bold: 11 };
+
+function expandMarkdownSentinel(fields: SampleField[]): SampleField[] {
+  if (fields.length !== 1) return fields;
+  const f0 = fields[0];
+  // Check both id and label — resilient against JSON serialisation quirks
+  // (Prisma Json returns the parsed value but field name collisions are possible)
+  if (f0.id !== '__markdown__' && f0.label !== '__markdown__') return fields;
+  const md = f0.staticValue ?? '';
+  if (!md.trim()) return [];
+
+  // Read custom font sizes saved by the editor (stored as JSON in columnKey)
+  let sz: MdSizes = DEFAULT_MD_SIZES;
+  try {
+    if (f0.columnKey) sz = { ...DEFAULT_MD_SIZES, ...JSON.parse(f0.columnKey) };
+  } catch { /* ignore */ }
+
+  return md
+    .split('\n')
+    .map(l => l.trimEnd())
+    .filter(l => l.trim() !== '')
+    .map((line, i): SampleField => {
+      const id = `md-${i}`;
+      const t  = line.trim();
+
+      const bc = t.match(/^\[barcode:(\S+)\]$/i);
+      if (bc) return { id, kind: 'barcode', label: 'Barcode', columnKey: bc[1] };
+
+      const qr = t.match(/^\[qr:(\S+)\]$/i);
+      if (qr) return { id, kind: 'qrcode', label: 'QR', columnKey: qr[1] };
+
+      const h4 = t.match(/^####\s+(.*)/);
+      if (h4) return { id, kind: 'text', label: 'H4', staticValue: h4[1].replace(/\*\*/g, ''), fontSize: sz.h4, bold: false };
+
+      const h3 = t.match(/^###\s+(.*)/);
+      if (h3) return { id, kind: 'text', label: 'H3', staticValue: h3[1].replace(/\*\*/g, ''), fontSize: sz.h3, bold: true };
+
+      const h2 = t.match(/^##\s+(.*)/);
+      if (h2) return { id, kind: 'text', label: 'H2', staticValue: h2[1].replace(/\*\*/g, ''), fontSize: sz.h2, bold: true };
+
+      const h1 = t.match(/^#\s+(.*)/);
+      if (h1) return { id, kind: 'text', label: 'H1', staticValue: h1[1].replace(/\*\*/g, ''), fontSize: sz.h1, bold: true };
+
+      const bLine = t.match(/^\*\*(.+)\*\*$/);
+      if (bLine) return { id, kind: 'text', label: 'Bold', staticValue: bLine[1], fontSize: sz.bold, bold: true };
+
+      return { id, kind: 'text', label: 'Text', staticValue: t.replace(/\*\*/g, ''), fontSize: sz.plain, bold: false };
+    });
+}
+
 // ---------- Public entry point ----------
 
 export async function renderLabelsPDF(input: RenderInput): Promise<Buffer> {
-  const widthPt = mmToPt(input.widthMm);
-  const heightPt = mmToPt(input.heightMm);
+  // Expand markdown sentinel before anything else.
+  const resolvedInput: RenderInput = {
+    ...input,
+    fields: expandMarkdownSentinel(input.fields),
+  };
+
+  const widthPt = mmToPt(resolvedInput.widthMm);
+  const heightPt = mmToPt(resolvedInput.heightMm);
 
   const doc = new PDFDocument({
     size: [widthPt, heightPt],
@@ -129,14 +197,14 @@ export async function renderLabelsPDF(input: RenderInput): Promise<Buffer> {
 
   // If there are no rows, emit a single blank page so we don't return an
   // empty PDF (some viewers refuse to open zero-page PDFs).
-  if (input.rows.length === 0) {
+  if (resolvedInput.rows.length === 0) {
     doc.addPage({ size: [widthPt, heightPt], margin: 0 });
   }
 
-  for (const row of input.rows) {
+  for (const row of resolvedInput.rows) {
     doc.addPage({ size: [widthPt, heightPt], margin: 0 });
     // eslint-disable-next-line no-await-in-loop -- pdfkit is sequential anyway
-    await renderOneLabel(doc, row, input.fields, widthPt, heightPt);
+    await renderOneLabel(doc, row, resolvedInput.fields, widthPt, heightPt);
   }
 
   doc.end();
@@ -195,10 +263,12 @@ async function renderOneLabel(
 
     // Text-like field.
     const value = resolveValue(f, row);
+    // Strip any markdown bold markers (**) that may have leaked through if the
+    // sentinel expansion was skipped — they should never appear in printed output.
     const text =
       f.kind === 'mrp'
         ? `MRP Rs. ${value || '—'}`
-        : (value || ''); // empty when unbound — just skip blank lines on label
+        : (value || '').replace(/\*\*/g, ''); // empty when unbound — just skip blank lines on label
     if (!text) continue;
 
     // Per-field fontSize from the sample editor is the SOLE source of truth.
@@ -248,8 +318,32 @@ function defaultPxFor(kind: FieldKind): number {
   }
 }
 
+/**
+ * Interpolate `{column_key}` placeholders in `template` from `row`.
+ *
+ * Enables mixed static + dynamic text in the Fallback / Static value field, e.g.:
+ *   template = "HS CODE: {hs_code}"
+ *   row      = { hs_code: "0901110010" }
+ *   result   = "HS CODE: 0901110010"
+ *
+ * Placeholders whose key is absent or blank in `row` are left unchanged
+ * (e.g. "{hs_code}") so missing-column problems surface clearly on the label.
+ */
+function interpolateTemplate(template: string, row: LabelRow): string {
+  if (!template || !template.includes('{')) return template;
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    const val = row[key];
+    if (val === undefined || val === null) return match;
+    const s = String(val).trim();
+    return s !== '' ? s : match;
+  });
+}
+
 function resolveValue(f: SampleField, row: LabelRow): string {
-  if (f.kind === 'text') return f.staticValue ?? '';
+  if (f.kind === 'text') {
+    // Text fields are always static, but support {placeholder} interpolation.
+    return interpolateTemplate(f.staticValue ?? '', row);
+  }
   // Use the Excel value only when it's actually present AND non-blank.
   // Empty strings and whitespace-only cells must fall through to the
   // static value — otherwise blank Excel cells silently produce blank
@@ -262,7 +356,9 @@ function resolveValue(f: SampleField, row: LabelRow): string {
       if (s !== '') return s;
     }
   }
-  return f.staticValue ?? '';
+  // Fallback: staticValue supports {placeholder} templates resolved from row
+  // data, enabling mixed static+dynamic output like "HS CODE: {hs_code}".
+  return interpolateTemplate(f.staticValue ?? '', row);
 }
 
 // ---------- Barcode / QR helpers ----------
