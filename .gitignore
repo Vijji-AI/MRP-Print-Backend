@@ -1,13 +1,18 @@
 # PrintMRP backend — standalone-repo .gitignore
-# Express + Prisma + TypeScript, deployed via Docker.
+# Express + Prisma + TypeScript, deployed via PM2 on a VPS.
 
 # ---- Secrets ----
-# Never commit .env. .env.example IS tracked so new contributors know which
-# vars to set.
+# Never commit .env. *.example files ARE tracked so new contributors know
+# which vars to set.
 .env
 .env.*
 !.env.example
 !.env.sample
+!.env.production.example
+
+# ---- PM2 runtime ----
+logs/
+.pm2/
 
 # ---- Node / npm / pnpm / yarn ----
 node_modules/
