@@ -28,6 +28,9 @@ model Customer {
   // default to 2; admin can override per-customer. Enforced at login time and
   // each authenticated request verifies the device record still exists.
   maxDevices         Int        @default(2)
+  // When true, this customer may upload PDFs in PrintFlow and use Gemini to
+  // extract table data from them. Off by default; admin enables per-customer.
+  allowPdf           Boolean    @default(false)
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 

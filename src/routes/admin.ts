@@ -32,6 +32,8 @@ const customerUpdateSchema = z.object({
   maxSamples: z.number().int().min(0).max(10000).optional(),
   // 0 = nobody can log in (effectively locks the account). Upper bound sanity.
   maxDevices: z.number().int().min(0).max(100).optional(),
+  // Allow this customer to upload PDFs and use Gemini-powered table extraction.
+  allowPdf: z.boolean().optional(),
 });
 
 const subscriptionSchema = z.object({
@@ -78,6 +80,7 @@ router.put('/customers/:id', validate(customerUpdateSchema), async (req, res, ne
         phone: body.phone === undefined ? c.phone : body.phone ?? null,
         maxSamples: body.maxSamples === undefined ? c.maxSamples : body.maxSamples,
         maxDevices: body.maxDevices === undefined ? c.maxDevices : body.maxDevices,
+        allowPdf: body.allowPdf === undefined ? c.allowPdf : body.allowPdf,
       },
     });
     res.json(customerDTO(updated));
