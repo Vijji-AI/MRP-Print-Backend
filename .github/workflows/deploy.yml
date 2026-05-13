@@ -82,7 +82,7 @@ jobs:
             PROJECT_PATH_RAW="${{ secrets.VPS_PROJECT_PATH }}"
             PROJECT_PATH=$(printf '%s' "$PROJECT_PATH_RAW" | tr -d '\r\n' | xargs)
             APP_NAME="printmrp-api"
-            HEALTH_URL="http://127.0.0.1:4000/health"
+            HEALTH_URL="http://127.0.0.1:8976/health"
 
             echo "==> cd $PROJECT_PATH"
             if [ ! -d "$PROJECT_PATH" ]; then
