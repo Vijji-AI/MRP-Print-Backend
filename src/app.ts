@@ -40,6 +40,7 @@ export function createApp() {
   app.get('/health', (_req, res) => {
     res.json({
       ok: true,
+      pm2:"tested by pm2",
       timestamp: new Date().toISOString(),
       service: 'PrintMRP API',
       version: '1.0.4',
