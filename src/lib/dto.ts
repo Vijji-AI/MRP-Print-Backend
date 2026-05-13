@@ -20,6 +20,7 @@ export const customerDTO = (c: Customer) => {
     totalPrints: c.totalPrints,
     maxSamples: c.maxSamples,
     maxDevices: c.maxDevices,
+    allowPdf: c.allowPdf,
     createdAt: c.createdAt.toISOString(),
   };
 };

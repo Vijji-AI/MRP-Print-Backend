@@ -5,6 +5,7 @@ import { sampleDTO } from '../lib/dto';
 import { forbidden, notFound } from '../lib/errors';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { parsePdfTable } from '../lib/pdfParse';
 
 const router = Router();
 router.use(requireAuth);
@@ -26,6 +27,35 @@ const sampleBodySchema = z.object({
   width: z.number().int().min(10).max(500),
   height: z.number().int().min(10).max(500),
   fields: z.array(fieldSchema),
+});
+
+// POST /api/samples/parse-pdf — extract table data from a PDF using Gemini vision.
+// Only available to customers whose allowPdf flag is true (enforced here).
+// Body: { pdfBase64: string }  (raw base64, no data-URL prefix)
+// Response: { columns: string[], rows: Record<string, string|number>[] }
+const parsePdfSchema = z.object({
+  pdfBase64: z.string().min(100, 'No PDF content received.').max(28_000_000),
+});
+
+router.post('/parse-pdf', validate(parsePdfSchema), async (req, res, next) => {
+  try {
+    const auth = req.auth!;
+    // Customers: check allowPdf flag. Admins may use this freely (e.g. for testing).
+    if (auth.role === 'customer') {
+      const customer = await prisma.customer.findUnique({
+        where: { id: auth.sub },
+        select: { allowPdf: true },
+      });
+      if (!customer) throw forbidden('Account not found.');
+      if (!customer.allowPdf) {
+        throw forbidden('PDF import is not enabled for your account. Contact your administrator.');
+      }
+    }
+
+    const { pdfBase64 } = req.body as z.infer<typeof parsePdfSchema>;
+    const result = await parsePdfTable(pdfBase64);
+    res.json(result);
+  } catch (e) { next(e); }
 });
 
 // GET /api/samples — list (customer: own; admin: all, optionally filter by ?customerId=)
