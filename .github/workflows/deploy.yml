@@ -76,11 +76,20 @@ jobs:
           script: |
             set -euo pipefail
 
-            PROJECT_PATH="${{ secrets.VPS_PROJECT_PATH }}"
+            # Trim any trailing/leading whitespace or CR/LF that may have crept
+            # into the GitHub secret. Without this, a stray newline in the
+            # secret value makes `cd` fail with "no such file or directory".
+            PROJECT_PATH_RAW="${{ secrets.VPS_PROJECT_PATH }}"
+            PROJECT_PATH=$(printf '%s' "$PROJECT_PATH_RAW" | tr -d '\r\n' | xargs)
             APP_NAME="printmrp-api"
             HEALTH_URL="http://127.0.0.1:4000/health"
 
             echo "==> cd $PROJECT_PATH"
+            if [ ! -d "$PROJECT_PATH" ]; then
+              echo "ERROR: $PROJECT_PATH does not exist on the VPS."
+              echo "Run the one-time setup (clone repo + place .env) before re-running this workflow."
+              exit 1
+            fi
             cd "$PROJECT_PATH"
 
             echo "==> Pulling latest master (hard reset to origin)"
