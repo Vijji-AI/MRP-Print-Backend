@@ -12,7 +12,7 @@ Prereqs:
 
 ---
 
-## 1. SSH into the VPS
+## 1. SSH into the VPS as root
 
 From your laptop (PowerShell or any terminal):
 
@@ -20,43 +20,32 @@ From your laptop (PowerShell or any terminal):
 ssh root@<YOUR_VPS_IP>
 ```
 
-Type `yes` on the host fingerprint prompt, then the root password.
+Type `yes` on the host fingerprint prompt, then the root password. This guide runs everything as `root` and keeps the project at `/root/print-api-new`.
 
-## 2. Create a non-root user
+## 2. Update the system
 
 ```bash
 apt update && apt upgrade -y
-adduser printmrp                # set a strong password
-usermod -aG sudo printmrp
-
-# carry SSH access over (skip if you only use a password)
-mkdir -p /home/printmrp/.ssh
-cp /root/.ssh/authorized_keys /home/printmrp/.ssh/authorized_keys 2>/dev/null || true
-chown -R printmrp:printmrp /home/printmrp/.ssh
-chmod 700 /home/printmrp/.ssh
-
-exit
-ssh printmrp@<YOUR_VPS_IP>
 ```
 
 ## 3. Install Node.js 20, nginx, git, PM2
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs nginx git build-essential
-sudo systemctl enable --now nginx
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs nginx git build-essential
+systemctl enable --now nginx
 
-sudo npm install -g pm2
+npm install -g pm2
 node -v && npm -v && pm2 -v
 ```
 
 ## 4. Firewall (Ubuntu UFW)
 
 ```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw --force enable
-sudo ufw status
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw --force enable
+ufw status
 ```
 
 > Also confirm Hostinger's panel firewall (VPS → Settings → Security) allows
@@ -64,44 +53,42 @@ sudo ufw status
 
 ## 5. Clone the repo
 
-Pick the path that matches how this code lives:
-
-**A) From GitHub (recommended once pushed):**
+**A) From GitHub (recommended):**
 ```bash
-cd ~
-git clone https://github.com/<you>/<repo>.git printmrp-backend
-cd printmrp-backend
+cd /root
+git clone https://github.com/Vijji-AI/MRP-Print-Backend.git print-api-new
+cd /root/print-api-new
 ```
 
 **B) From your laptop (no GitHub):** on your laptop run:
 ```powershell
-scp -r "E:\vijji\MRP-Print-Backend" printmrp@<YOUR_VPS_IP>:/home/printmrp/printmrp-backend
+scp -r "E:\vijji\MRP-Print-Backend" root@<YOUR_VPS_IP>:/root/print-api-new
 ```
-Then on the VPS: `cd ~/printmrp-backend`
+Then on the VPS: `cd /root/print-api-new`
 
 ## 6. Drop in the production `.env`
 
-The repo includes `.env.production` (already prepared on your machine, **gitignored**). Copy it to the VPS path it expects (`.env`):
+The repo includes `.env.production` (already prepared on your machine, **gitignored**). Copy it to the VPS as `.env`:
 
 From your laptop:
 ```powershell
-scp "E:\vijji\MRP-Print-Backend\.env.production" printmrp@<YOUR_VPS_IP>:/home/printmrp/printmrp-backend/.env
+scp "E:\vijji\MRP-Print-Backend\.env.production" root@<YOUR_VPS_IP>:/root/print-api-new/.env
 ```
 
 Or paste the contents directly on the VPS:
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 nano .env       # paste the .env.production contents, save
-chmod 600 .env  # only your user can read it
+chmod 600 .env  # only root can read it
 ```
 
 > The `DATABASE_URL` should already point at the Supabase Session Pooler with
-> your real password. If you ever rotate it: edit `.env` then `pm2 restart printmrp-api`.
+> your real password. If you ever rotate it: edit `.env` then `pm2 restart printmrp-api --update-env`.
 
 ## 7. Install deps, build, migrate, seed
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 npm ci                          # clean install from package-lock.json
 npx prisma generate
 npx prisma migrate deploy       # applies prisma/migrations/* to Supabase
@@ -115,7 +102,7 @@ Fix and re-run.
 ## 8. Start under PM2
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 mkdir -p logs
 pm2 start ecosystem.config.cjs
 pm2 status
@@ -125,8 +112,8 @@ pm2 logs printmrp-api --lines 50
 Make PM2 survive reboots:
 ```bash
 pm2 save
-pm2 startup systemd -u printmrp --hp /home/printmrp
-# PM2 prints a `sudo env PATH=... pm2 ...` line — copy/paste and run it.
+pm2 startup systemd                # auto-detects root, generates the systemd unit
+# PM2 prints an `env PATH=... pm2 ...` line — copy/paste and run it.
 ```
 
 Quick local probe (still on the VPS):
@@ -138,7 +125,7 @@ You should see a JSON response with `"ok": true`.
 ## 9. Put nginx in front of PM2
 
 ```bash
-sudo nano /etc/nginx/sites-available/printmrp-api
+nano /etc/nginx/sites-available/printmrp-api
 ```
 
 Paste:
@@ -166,9 +153,9 @@ server {
 
 Enable + reload:
 ```bash
-sudo ln -s /etc/nginx/sites-available/printmrp-api /etc/nginx/sites-enabled/printmrp-api
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+ln -s /etc/nginx/sites-available/printmrp-api /etc/nginx/sites-enabled/printmrp-api
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
 ```
 
 Verify from your laptop:
@@ -182,24 +169,24 @@ http://<YOUR_VPS_IP>/health
 2. Wait for DNS to propagate (`dig api.example.com +short` should return the IP).
 3. Edit the nginx site:
    ```bash
-   sudo nano /etc/nginx/sites-available/printmrp-api
+   nano /etc/nginx/sites-available/printmrp-api
    ```
    Change `server_name _;` → `server_name api.example.com;`
 4. Install certbot and issue a cert:
    ```bash
-   sudo apt install -y certbot python3-certbot-nginx
-   sudo certbot --nginx -d api.example.com
-   sudo systemctl reload nginx
+   apt install -y certbot python3-certbot-nginx
+   certbot --nginx -d api.example.com
+   systemctl reload nginx
    ```
 5. Tighten CORS — edit `.env` and change `CORS_ORIGINS="*"` to your actual
-   frontend origin(s), then `pm2 restart printmrp-api`.
+   frontend origin(s), then `pm2 restart printmrp-api --update-env`.
 
 ## 11. PM2 cheat-sheet
 
 ### One-shot first deploy
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 
 # 1. Install deps + build
 npm ci
@@ -216,8 +203,8 @@ pm2 start ecosystem.config.cjs
 
 # 4. Persist across reboots
 pm2 save
-pm2 startup systemd -u $USER --hp $HOME
-# ↑ copy/paste the `sudo env PATH=...` line PM2 prints, then run it.
+pm2 startup systemd
+# ↑ copy/paste the `env PATH=...` line PM2 prints, then run it.
 
 # 5. Sanity check
 pm2 status
@@ -228,7 +215,7 @@ curl http://127.0.0.1:4000/health
 ### Redeploy after a code change
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 git pull                        # or scp the new code up
 npm ci
 npx prisma migrate deploy       # no-op if schema unchanged
@@ -239,7 +226,7 @@ pm2 reload printmrp-api         # zero-downtime restart
 ### Drop-and-recreate DB (DESTRUCTIVE)
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 npx prisma migrate reset --force --skip-seed
 node prisma/seed.cjs
 pm2 restart printmrp-api
@@ -248,7 +235,7 @@ pm2 restart printmrp-api
 ### Update env vars (PM2 caches them — must `--update-env`)
 
 ```bash
-cd ~/printmrp-backend
+cd /root/print-api-new
 nano .env
 pm2 restart printmrp-api --update-env
 ```
