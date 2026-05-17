@@ -8,6 +8,8 @@ import paymentsRoutes from './routes/payments';
 import settingsRoutes from './routes/settings';
 import printsRoutes from './routes/prints';
 import adminRoutes from './routes/admin';
+import subscriptionRequestsRoutes from './routes/subscriptionRequests';
+import pricingRoutes from './routes/pricing';
 import { errorHandler } from './middleware/error';
 
 const startTime = Date.now();
@@ -31,6 +33,15 @@ export function createApp() {
         if (!origin) return cb(null, true);
         if (config.corsOrigins.includes('*')) return cb(null, true);
         if (config.corsOrigins.includes(origin)) return cb(null, true);
+        // In development, allow any localhost port (Vite auto-bumps the port
+        // when 5173/5174 are already in use, so hardcoding specific ports breaks
+        // login whenever a stale dev-server process holds an earlier port).
+        if (
+          process.env.NODE_ENV !== 'production' &&
+          /^https?:\/\/localhost(:\d+)?$/.test(origin)
+        ) {
+          return cb(null, true);
+        }
         cb(new Error(`Origin ${origin} not allowed by CORS`));
       },
       credentials: true,
@@ -64,6 +75,8 @@ export function createApp() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/prints', printsRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/subscription-requests', subscriptionRequestsRoutes);
+  app.use('/api/pricing', pricingRoutes);
 
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
   app.use(errorHandler);

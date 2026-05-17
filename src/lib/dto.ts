@@ -1,5 +1,5 @@
 // Helpers to project DB rows into the JSON shape the frontend expects.
-import type { Customer, Sample, Payment, Settings, PrintRun, Admin, Device, PaperSize } from '@prisma/client';
+import type { Customer, Sample, Payment, Settings, PrintRun, Admin, Device, PaperSize, SubscriptionRequest } from '@prisma/client';
 
 export const customerDTO = (c: Customer) => {
   // Lazy expiry: if an admin set status='active' but the until-date has passed,
@@ -79,6 +79,22 @@ export const settingsDTO = (s: Settings) => ({
   paperSize: s.paperSize,
   printer: s.printer,
   copies: s.copies,
+});
+
+export const subscriptionRequestDTO = (
+  r: SubscriptionRequest & { customer?: { name: string; email: string } },
+) => ({
+  id: r.id,
+  customerId: r.customerId,
+  customerName: r.customer?.name ?? '',
+  customerEmail: r.customer?.email ?? '',
+  maxSamples: r.maxSamples,
+  maxDevices: r.maxDevices,
+  planMonths: r.planMonths,
+  note: r.note ?? undefined,
+  status: r.status,
+  createdAt: r.createdAt.toISOString(),
+  updatedAt: r.updatedAt.toISOString(),
 });
 
 export const printRunDTO = (r: PrintRun) => ({

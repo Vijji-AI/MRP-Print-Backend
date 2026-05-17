@@ -7,6 +7,7 @@ import { conflict, notFound } from '../lib/errors';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { generateSampleFromImage } from '../lib/visionGenerate';
+import { readPricing, writePricing, pricingSchema } from './pricing';
 
 const router = Router();
 // requireAuth must run first so req.auth is populated before requireAdmin
@@ -298,6 +299,17 @@ router.post('/admins/:id/reset-password', validate(resetPasswordSchema), async (
     await prisma.admin.update({ where: { id: a.id }, data: { passwordHash } });
     res.json({ ok: true });
   } catch (e) { next(e); }
+});
+
+// ---------- Pricing config ----------
+
+router.get('/pricing', (_req, res) => {
+  res.json(readPricing());
+});
+
+router.put('/pricing', validate(pricingSchema), (req, res) => {
+  writePricing(req.body);
+  res.json(req.body);
 });
 
 // ---------- Dashboard ----------

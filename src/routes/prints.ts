@@ -55,24 +55,29 @@ router.post('/', validate(recordSchema), async (req, res, next) => {
 // ---------- PDF generation ----------
 //
 // POST /api/prints/pdf
-// Body: { sampleId, paperSize: name, rows: [{...}, ...] }
-// Returns: application/pdf binary, one page per row at exact mm dimensions.
+// Body: { sampleId, rows: [{...}, ...] }
+// Returns: application/pdf binary, one page per row sized to sample.width × sample.height.
+//
+// IMPORTANT: PDF page dimensions ALWAYS equal sample.width × sample.height.
+// The sample IS the paper size — the customer designs the label at the exact
+// physical dimensions they'll print on, so the rendered blob always matches
+// the paper they loaded into the printer.
+//
+// We previously honored a separate `paperSize` from settings, but that caused
+// the printed blob to mismatch the customer's authored label (content in
+// top-left corner, blank space filling a larger page). The setting is still
+// accepted in the request body for backwards compatibility but is ignored
+// when computing page dimensions.
 //
 // We deliberately keep this customer-scoped (the route inherits requireCustomer
 // from above): a customer can only render PDFs for their own samples.
 
-const BUILTIN_PAPER_SIZES: Record<string, { widthMm: number; heightMm: number }> = {
-  'Label-50x30':  { widthMm:  50, heightMm:  30 },
-  'Label-70x40':  { widthMm:  70, heightMm:  40 },
-  'Label-100x50': { widthMm: 100, heightMm:  50 },
-  A4:             { widthMm: 210, heightMm: 297 },
-  A5:             { widthMm: 148, heightMm: 210 },
-  Letter:         { widthMm: 216, heightMm: 279 },
-};
-
 const pdfBodySchema = z.object({
-  sampleId: z.string().min(1),
-  paperSize: z.string().min(1).max(80),
+  sampleId:  z.string().min(1),
+  // paperSize is still accepted from the client for backwards compatibility
+  // but is no longer used for PDF page dimensions — sample.width × sample.height
+  // is the single source of truth.
+  paperSize: z.string().min(1).max(80).optional(),
   // Each entry is one physical label. Frontend expands qty before sending.
   rows: z.array(z.record(z.union([z.string(), z.number(), z.null()])))
     .min(1, 'At least one row is required.')
@@ -82,25 +87,19 @@ const pdfBodySchema = z.object({
 router.post('/pdf', validate(pdfBodySchema), async (req, res, next) => {
   try {
     const auth = req.auth!;
-    const { sampleId, paperSize, rows } = req.body as z.infer<typeof pdfBodySchema>;
+    const { sampleId, rows } = req.body as z.infer<typeof pdfBodySchema>;
 
     const sample = await prisma.sample.findUnique({ where: { id: sampleId } });
     if (!sample) throw notFound('Sample not found');
     if (sample.customerId !== auth.sub) throw forbidden();
 
-    // Resolve paper size: built-in first, then customer's custom list.
-    let dims = BUILTIN_PAPER_SIZES[paperSize];
-    if (!dims) {
-      const custom = await prisma.paperSize.findUnique({
-        where: { customerId_name: { customerId: auth.sub, name: paperSize } },
-      });
-      if (!custom) throw badRequest(`Unknown paper size: ${paperSize}`);
-      dims = { widthMm: custom.widthMm, heightMm: custom.heightMm };
-    }
-
+    // Sample IS the paper size — no override. The customer authored the label
+    // at the exact physical dimensions they want printed, so the PDF page
+    // matches automatically. paperSize from the request body is intentionally
+    // ignored here (still accepted for backwards compatibility).
     const pdf = await renderLabelsPDF({
-      widthMm: dims.widthMm,
-      heightMm: dims.heightMm,
+      widthMm:      sample.width,
+      heightMm:     sample.height,
       fields: sample.fields as unknown as SampleField[],
       rows,
     });

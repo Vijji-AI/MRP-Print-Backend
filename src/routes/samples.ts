@@ -6,6 +6,7 @@ import { forbidden, notFound } from '../lib/errors';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { parsePdfTable } from '../lib/pdfParse';
+import { generateSampleFromImage } from '../lib/visionGenerate';
 
 const router = Router();
 router.use(requireAuth);
@@ -55,6 +56,26 @@ router.post('/parse-pdf', validate(parsePdfSchema), async (req, res, next) => {
     const { pdfBase64 } = req.body as z.infer<typeof parsePdfSchema>;
     const result = await parsePdfTable(pdfBase64);
     res.json(result);
+  } catch (e) { next(e); }
+});
+
+// POST /api/samples/generate-from-image — Vision-based sample generation.
+// Available to all authenticated users (customers and admins).
+// Body: { imageBase64: string, mimeType: string }
+// Response: draft Sample shape (no id/customerId) — user reviews before saving.
+const generateFromImageSchema = z.object({
+  imageBase64: z.string().min(100, 'imageBase64 is required'),
+  mimeType: z.string().min(1),
+});
+
+router.post('/generate-from-image', validate(generateFromImageSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof generateFromImageSchema>;
+    const draft = await generateSampleFromImage({
+      imageBase64: body.imageBase64,
+      mimeType: body.mimeType,
+    });
+    res.json(draft);
   } catch (e) { next(e); }
 });
 

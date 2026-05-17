@@ -79,6 +79,11 @@ export type LabelRow = Record<string, string | number | null | undefined>;
 export interface RenderInput {
   widthMm: number;
   heightMm: number;
+  /** PDF page dimensions. Defaults to widthMm × heightMm when not provided.
+   *  Set this to the customer's chosen paper/label size so the PDF page
+   *  matches the physical media loaded in the printer. */
+  pageWidthMm?: number;
+  pageHeightMm?: number;
   fields: SampleField[];
   /** Already expanded — one row per physical label to print (qty already applied). */
   rows: LabelRow[];
@@ -89,15 +94,21 @@ export interface RenderInput {
 const MM_PER_INCH = 25.4;
 const PT_PER_INCH = 72;
 const mmToPt = (mm: number) => (mm / MM_PER_INCH) * PT_PER_INCH;
-// LabelPreview uses px sizes authored on screen. The strict 96 DPI
-// conversion (px * 0.75) prints visibly too big on thermal labels because
-// modern displays render CSS px at higher effective DPI — what looks
-// "right" in the editor lands ~2x oversized on a 203 DPI thermal head.
-// PRINT_FONT_COMPENSATION halves the rendered point size so what the
-// customer authors in the sample editor matches what comes off the printer.
-// This is the SOLE adjustment applied to font size; nothing else scales it.
-const PRINT_FONT_COMPENSATION = 0.5;
-const pxToPt = (px: number) => px * (72 / 96) * PRINT_FONT_COMPENSATION;
+// CSS px → PDF points conversion (1 CSS px = 1/96 inch, 1 pt = 1/72 inch).
+//
+// We previously multiplied this by an extra 0.5 "thermal printer
+// compensation" factor to keep text from looking oversized on 203 DPI
+// thermal heads. That heuristic backfired on regular printers and on
+// PDFs viewed in normal readers — the rendered text came out half the
+// physical size the customer authored, leaving roughly the lower half of
+// every label blank.
+//
+// We now treat the customer's authored px size as the canonical physical
+// size: 14px on the screen editor = 14px ≈ 10.5pt in the printed PDF,
+// regardless of the printer's DPI. The page itself is sized to the
+// sample's real mm dimensions, so type sized in points lands at the same
+// physical size on any printer.
+const pxToPt = (px: number) => px * (72 / 96);
 
 // ---------- Markdown sentinel expansion ----------
 //
@@ -170,11 +181,21 @@ export async function renderLabelsPDF(input: RenderInput): Promise<Buffer> {
     fields: expandMarkdownSentinel(input.fields),
   };
 
-  const widthPt = mmToPt(resolvedInput.widthMm);
-  const heightPt = mmToPt(resolvedInput.heightMm);
+  // Content drawing area — the sample's own label dimensions.
+  const contentWidthPt  = mmToPt(resolvedInput.widthMm);
+  const contentHeightPt = mmToPt(resolvedInput.heightMm);
+
+  // PDF page dimensions — use the caller-supplied paper size when available;
+  // otherwise fall back to the label size so every page exactly fits one label.
+  const pageWidthPt  = resolvedInput.pageWidthMm  ? mmToPt(resolvedInput.pageWidthMm)  : contentWidthPt;
+  const pageHeightPt = resolvedInput.pageHeightMm ? mmToPt(resolvedInput.pageHeightMm) : contentHeightPt;
+
+  // Keep backward-compat aliases so renderOneLabel still compiles.
+  const widthPt  = contentWidthPt;
+  const heightPt = contentHeightPt;
 
   const doc = new PDFDocument({
-    size: [widthPt, heightPt],
+    size: [pageWidthPt, pageHeightPt],
     margin: 0,
     autoFirstPage: false,
     info: { Title: 'PrintMRP Labels', Producer: 'PrintMRP' },
@@ -198,11 +219,11 @@ export async function renderLabelsPDF(input: RenderInput): Promise<Buffer> {
   // If there are no rows, emit a single blank page so we don't return an
   // empty PDF (some viewers refuse to open zero-page PDFs).
   if (resolvedInput.rows.length === 0) {
-    doc.addPage({ size: [widthPt, heightPt], margin: 0 });
+    doc.addPage({ size: [pageWidthPt, pageHeightPt], margin: 0 });
   }
 
   for (const row of resolvedInput.rows) {
-    doc.addPage({ size: [widthPt, heightPt], margin: 0 });
+    doc.addPage({ size: [pageWidthPt, pageHeightPt], margin: 0 });
     // eslint-disable-next-line no-await-in-loop -- pdfkit is sequential anyway
     await renderOneLabel(doc, row, resolvedInput.fields, widthPt, heightPt);
   }
@@ -319,24 +340,91 @@ function defaultPxFor(kind: FieldKind): number {
 }
 
 /**
+ * Normalize a column key for fuzzy matching: lowercase, trim, then drop every
+ * non-alphanumeric character. This makes the lookup tolerant of all the ways
+ * the same column name shows up in the wild:
+ *
+ *   "Part No"   → "partno"
+ *   "part_no"   → "partno"
+ *   "part-no"   → "partno"
+ *   " PART NO " → "partno"
+ *   "Part No."  → "partno"
+ *
+ * This is critical because the customer's authored placeholder ("{Part No}")
+ * and the Excel header ("part_no" or "Part_Number") frequently disagree in
+ * subtle ways. Without normalization the placeholder prints as literal text
+ * in the PDF — which is exactly what we were seeing.
+ */
+function normalizeKey(key: string): string {
+  return key.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Build a normalized → value index over a row, keyed by `normalizeKey(k)`.
+ * The first occurrence wins when two columns normalize to the same string
+ * (avoids ambiguity when, say, both "Part No" and "Part-No" are present).
+ */
+function buildRowIndex(row: LabelRow): Map<string, string | number | null | undefined> {
+  const idx = new Map<string, string | number | null | undefined>();
+  for (const [k, v] of Object.entries(row)) {
+    const nk = normalizeKey(k);
+    if (nk && !idx.has(nk)) idx.set(nk, v);
+  }
+  return idx;
+}
+
+/**
  * Interpolate `{column_key}` placeholders in `template` from `row`.
  *
- * Enables mixed static + dynamic text in the Fallback / Static value field, e.g.:
- *   template = "HS CODE: {hs_code}"
- *   row      = { hs_code: "0901110010" }
+ * Enables mixed static + dynamic text, e.g.:
+ *   template = "HS CODE: {hs_code}"   row = { "HS Code": "0901110010" }
  *   result   = "HS CODE: 0901110010"
  *
- * Placeholders whose key is absent or blank in `row` are left unchanged
- * (e.g. "{hs_code}") so missing-column problems surface clearly on the label.
+ * Lookup strategy (in order):
+ *   1. Exact key match              — "Part No" → row["Part No"]
+ *   2. Trimmed key match            — " Part No " → row["Part No"]
+ *   3. Normalized fuzzy match       — "Part No" → "partno" → row["Part_No"]
+ *
+ * Placeholders whose key is absent or blank are left unchanged so the
+ * customer can see which column key is missing.
  */
 function interpolateTemplate(template: string, row: LabelRow): string {
   if (!template || !template.includes('{')) return template;
-  return template.replace(/\{(\w+)\}/g, (match, key) => {
-    const val = row[key];
-    if (val === undefined || val === null) return match;
+  const idx = buildRowIndex(row);
+  return template.replace(/\{([^}]+)\}/g, (match, rawKey: string) => {
+    const key = rawKey.trim();
+    // 1. Exact
+    let val: string | number | null | undefined = row[key];
+    // 2. Original (handles "{ Part No }" preserving surrounding whitespace)
+    if (val === undefined) val = row[rawKey];
+    // 3. Normalized fuzzy match
+    if (val === undefined) val = idx.get(normalizeKey(key));
+    if (val === undefined || val === null) return match; // leave placeholder visible
     const s = String(val).trim();
     return s !== '' ? s : match;
   });
+}
+
+/**
+ * Look up a column key in a row, trying exact match first, then trimmed,
+ * then normalized (case-insensitive + non-alphanumerics stripped). Handles
+ * the common discrepancies between the column key authored in the sample
+ * editor and the actual Excel header — e.g. "Part No" vs "part_no" vs "Part-No".
+ */
+function lookupColumn(key: string, row: LabelRow): string | number | null | undefined {
+  // 1. Exact match
+  let val = row[key];
+  if (val !== undefined) return val;
+  // 2. Trimmed exact match
+  const trimmed = key.trim();
+  if (trimmed !== key) { val = row[trimmed]; if (val !== undefined) return val; }
+  // 3. Normalized fuzzy match
+  const norm = normalizeKey(trimmed);
+  if (!norm) return undefined;
+  for (const [k, v] of Object.entries(row)) {
+    if (normalizeKey(k) === norm) return v;
+  }
+  return undefined;
 }
 
 function resolveValue(f: SampleField, row: LabelRow): string {
@@ -350,7 +438,7 @@ function resolveValue(f: SampleField, row: LabelRow): string {
   // labels and the "Fallback / static value" the customer authored is
   // never honored.
   if (f.columnKey) {
-    const raw = row[f.columnKey];
+    const raw = lookupColumn(f.columnKey, row);
     if (raw !== undefined && raw !== null) {
       const s = String(raw).trim();
       if (s !== '') return s;
