@@ -29,6 +29,9 @@ const fieldSchema = z.object({
   // refuse them on other kinds (cheap, and stripping them out is a UI concern).
   dateMode: z.enum(['today', 'custom']).optional(),
   dateFormat: z.string().max(40).optional(),
+  // When true, this field renders side-by-side with the next one (shares one
+  // printed row of the label). Default false → vertical stacking (legacy).
+  inlineWithNext: z.boolean().optional(),
 });
 
 const sampleBodySchema = z.object({

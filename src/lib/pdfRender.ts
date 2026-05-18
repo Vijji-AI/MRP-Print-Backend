@@ -78,6 +78,10 @@ export interface SampleField {
   // Date-field controls (only meaningful for kind === 'date').
   dateMode?: 'today' | 'custom';
   dateFormat?: string;     // tokens: YYYY YY MMM MM DD D · default "DD/MM/YYYY"
+  // When true, the next field renders SIDE-BY-SIDE with this one rather than
+  // on the line below. Lets small fields (qty marker + small QR, etc.) share
+  // one printed row of the label.
+  inlineWithNext?: boolean;
 }
 
 export type LabelRow = Record<string, string | number | null | undefined>;
@@ -260,85 +264,140 @@ async function renderOneLabel(
   const barcodeMaxMm = 8;
   const qrMaxMm = 10;
 
-  for (const f of fields) {
-    if (remainingY() <= 0) break;     // out of room — skip the rest, don't overflow
+  // ── Group fields by `inlineWithNext` chains ───────────────────────────────
+  //
+  // When a field has inlineWithNext=true, it shares one printed row with the
+  // next field (and so on, transitively). This lets a customer place small
+  // fields like a qty marker + a tiny QR side-by-side without using up two
+  // rows of a small thermal label.
+  //
+  // Implementation: precompute groups of consecutive fields and, for each
+  // group, divide the available innerWidth into equal columns. Singles use
+  // the full innerWidth (the historical behaviour, byte-for-byte identical).
+  const groups: SampleField[][] = [];
+  {
+    let current: SampleField[] = [];
+    for (const f of fields) {
+      current.push(f);
+      if (!f.inlineWithNext) { groups.push(current); current = []; }
+    }
+    if (current.length) groups.push(current);
+  }
+
+  for (const group of groups) {
+    if (remainingY() <= 0) break;
+
+    // Single-field row → existing path unchanged.
+    if (group.length === 1) {
+      yCursor = await drawOneField(group[0], padPt, innerWidth, yCursor);
+      continue;
+    }
+
+    // Multi-field row → equal columns, all drawn at the SAME starting y,
+    // yCursor advances by the tallest field in the group.
+    const colWidth = innerWidth / group.length;
+    const rowStartY = yCursor;
+    let maxBottom = rowStartY;
+    for (let i = 0; i < group.length; i++) {
+      const xCol = padPt + i * colWidth;
+      const yEnd = await drawOneField(group[i], xCol, colWidth, rowStartY);
+      if (yEnd > maxBottom) maxBottom = yEnd;
+    }
+    yCursor = maxBottom;
+  }
+
+  // ── Per-field rendering helper ────────────────────────────────────────────
+  //
+  // Renders ONE field starting at (`colXStart`, `yStart`) inside a column of
+  // `colWidth` points, and returns the y-coordinate just below the drawn
+  // content (so the caller can advance the cursor or compute max-bottom of
+  // a row). The function captures `doc`, `row`, `widthPt`, `heightPt`, and
+  // `padPt` from the surrounding closure.
+
+  async function drawOneField(
+    f: SampleField,
+    colXStart: number,
+    colWidth: number,
+    yStart: number,
+  ): Promise<number> {
+    let y = yStart;
+    // Cap remaining vertical room from the column's starting y, not the
+    // module-level yCursor — they differ during a multi-field row.
+    const colRemainingY = () => heightPt - y - padPt;
+    if (colRemainingY() <= 0) return y;
 
     if (f.kind === 'barcode') {
       const value = resolveValue(f, row) || '0000000';
-      const barcodeHeightPt = Math.min(mmToPt(barcodeMaxMm), remainingY());
+      const barcodeHeightPt = Math.min(mmToPt(barcodeMaxMm), colRemainingY());
       const png = await renderBarcodePNG(value);
-      doc.image(png, padPt, yCursor, {
-        width: innerWidth,
-        height: barcodeHeightPt,
-      });
-      yCursor += barcodeHeightPt + 2;
-      continue;
+      if (f.align === 'center' || f.align === 'right') {
+        const naturalWidthPt = mmToPt(barcodeMaxMm * 3); // ~3:1 aspect by convention
+        const drawWidth = Math.min(naturalWidthPt, colWidth);
+        const xOff = f.align === 'center'
+          ? colXStart + (colWidth - drawWidth) / 2
+          : colXStart + (colWidth - drawWidth);
+        doc.image(png, xOff, y, { width: drawWidth, height: barcodeHeightPt });
+      } else {
+        doc.image(png, colXStart, y, { width: colWidth, height: barcodeHeightPt });
+      }
+      return y + barcodeHeightPt + 2;
     }
 
     if (f.kind === 'qrcode') {
       const value = resolveValue(f, row) || ' ';
-      const qrSizePt = Math.min(mmToPt(qrMaxMm), remainingY());
+      // Cap by the column's width too — a QR that's 10mm tall but the
+      // column is only 6mm wide must shrink so it doesn't spill into the
+      // next column.
+      const qrSizePt = Math.min(mmToPt(qrMaxMm), colRemainingY(), colWidth);
       const png = await renderQRPNG(value);
-      // Center horizontally to match the frontend's preview.
-      doc.image(png, (widthPt - qrSizePt) / 2, yCursor, {
-        width: qrSizePt,
-        height: qrSizePt,
-      });
-      yCursor += qrSizePt + 2;
-      continue;
+      const align = f.align ?? 'center';
+      const xOff =
+        align === 'left'  ? colXStart :
+        align === 'right' ? colXStart + (colWidth - qrSizePt) :
+                            colXStart + (colWidth - qrSizePt) / 2;
+      doc.image(png, xOff, y, { width: qrSizePt, height: qrSizePt });
+      return y + qrSizePt + 2;
     }
 
     // Text-like field.
-    const value = resolveValue(f, row);
-    // Strip any markdown bold markers (**) that may have leaked through if the
-    // sentinel expansion was skipped — they should never appear in printed output.
+    const rawValue = resolveValue(f, row);
+    let mrpSuffix = '';
+    if (f.kind === 'mrp') {
+      const moqRaw = row._moq;
+      const moq = typeof moqRaw === 'number' ? moqRaw : Number(moqRaw);
+      if (Number.isFinite(moq) && moq > 1) mrpSuffix = ` (MOQ ${moq})`;
+    }
     const text =
       f.kind === 'mrp'
-        ? `MRP Rs. ${value || '—'}`
-        : (value || '').replace(/\*\*/g, ''); // empty when unbound — just skip blank lines on label
-    if (!text) continue;
+        ? `MRP Rs. ${rawValue || '—'}${mrpSuffix}`
+        : (rawValue || '').replace(/\*\*/g, '');
+    if (!text) return y;
 
-    // Per-field fontSize from the sample editor is the SOLE source of truth.
-    // We never scale or override it based on paper size — what the customer
-    // sets is exactly what prints. Only when a field has no fontSize at all
-    // do we fall back to a small fixed default for that field kind.
     const fontSizePx = f.fontSize ?? defaultPxFor(f.kind);
     const fontSizePt = pxToPt(fontSizePx);
     const isBold = !!f.bold || f.kind === 'mrp' || f.kind === 'product';
-    // fontForText auto-switches to the bundled Noto Sans Devanagari when
-    // the text contains Devanagari characters, so Nepali product names
-    // render as real glyphs instead of empty boxes.
     doc.font(fontForText(text, isBold));
     doc.fontSize(fontSizePt);
     doc.fillColor('#000');
 
-    // ── Per-line layout extras ────────────────────────────────────────────
-    // leftMargin (px) shifts the x-origin of this line to the right; the
-    // available drawing width shrinks accordingly so wrapping still respects
-    // the global right edge. letterSpacing (px) maps to PDFKit's
-    // characterSpacing option (in PDF points). Both default to 0 when unset
-    // so existing samples are unaffected.
     const leftMarginPt    = pxToPt(f.leftMargin    ?? 0);
     const letterSpacingPt = pxToPt(f.letterSpacing ?? 0);
-    const xStart          = padPt + leftMarginPt;
-    const drawWidth       = Math.max(1, innerWidth - leftMarginPt);
+    const xStart          = colXStart + leftMarginPt;
+    const drawWidth       = Math.max(1, colWidth - leftMarginPt);
 
-    // Wrap to drawWidth; clip at remaining height so we never spill onto
-    // adjacent labels.
     const lineHeightPt = fontSizePt * 1.15;
-    doc.text(text, xStart, yCursor, {
+    doc.text(text, xStart, y, {
       width: drawWidth,
-      height: Math.max(lineHeightPt, remainingY()),
+      height: Math.max(lineHeightPt, colRemainingY()),
       align: f.align ?? 'left',
       lineBreak: true,
       ellipsis: true,
       characterSpacing: letterSpacingPt,
     });
-
-    // pdfkit advances doc.y after a text() call — use that as the new cursor.
-    yCursor = doc.y + 1;
+    return doc.y + 1;
   }
 }
+
 
 /**
  * Fallback px size used ONLY when a field has no `fontSize` set at all.
