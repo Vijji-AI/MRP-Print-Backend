@@ -69,9 +69,15 @@ export interface SampleField {
   label: string;
   staticValue?: string;
   columnKey?: string;
-  fontSize?: number;       // px, as authored on the frontend
+  fontSize?: number;       // px, as authored on the frontend (any positive int)
   bold?: boolean;
   align?: 'left' | 'center' | 'right';
+  // Per-line layout extras (frontend types.ts has the prose). 0 means no effect.
+  leftMargin?: number;     // extra left indent in px
+  letterSpacing?: number;  // tracking, in px
+  // Date-field controls (only meaningful for kind === 'date').
+  dateMode?: 'today' | 'custom';
+  dateFormat?: string;     // tokens: YYYY YY MMM MM DD D · default "DD/MM/YYYY"
 }
 
 export type LabelRow = Record<string, string | number | null | undefined>;
@@ -306,15 +312,27 @@ async function renderOneLabel(
     doc.fontSize(fontSizePt);
     doc.fillColor('#000');
 
-    // Wrap to inner width; clip at remaining height so we never spill onto
+    // ── Per-line layout extras ────────────────────────────────────────────
+    // leftMargin (px) shifts the x-origin of this line to the right; the
+    // available drawing width shrinks accordingly so wrapping still respects
+    // the global right edge. letterSpacing (px) maps to PDFKit's
+    // characterSpacing option (in PDF points). Both default to 0 when unset
+    // so existing samples are unaffected.
+    const leftMarginPt    = pxToPt(f.leftMargin    ?? 0);
+    const letterSpacingPt = pxToPt(f.letterSpacing ?? 0);
+    const xStart          = padPt + leftMarginPt;
+    const drawWidth       = Math.max(1, innerWidth - leftMarginPt);
+
+    // Wrap to drawWidth; clip at remaining height so we never spill onto
     // adjacent labels.
     const lineHeightPt = fontSizePt * 1.15;
-    doc.text(text, padPt, yCursor, {
-      width: innerWidth,
+    doc.text(text, xStart, yCursor, {
+      width: drawWidth,
       height: Math.max(lineHeightPt, remainingY()),
       align: f.align ?? 'left',
       lineBreak: true,
       ellipsis: true,
+      characterSpacing: letterSpacingPt,
     });
 
     // pdfkit advances doc.y after a text() call — use that as the new cursor.
@@ -427,7 +445,32 @@ function lookupColumn(key: string, row: LabelRow): string | number | null | unde
   return undefined;
 }
 
+// Date-format token replacer. Same fixed grammar the frontend uses
+// (frontend/src/components/SampleEditorForm.tsx formatDateToken) — keep the
+// three copies (here, the editor, LabelPreview) in sync if you extend it.
+const MONTH_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function formatDateToken(d: Date, fmt: string): string {
+  const Y = String(d.getFullYear());
+  const M = d.getMonth() + 1;
+  const D = d.getDate();
+  return fmt
+    .replace(/YYYY/g, Y)
+    .replace(/YY/g,   Y.slice(-2))
+    .replace(/MMM/g,  MONTH_SHORT[d.getMonth()])
+    .replace(/MM/g,   String(M).padStart(2, '0'))
+    .replace(/DD/g,   String(D).padStart(2, '0'))
+    .replace(/(?<![A-Za-z])M(?![A-Za-z])/g, String(M))
+    .replace(/(?<![A-Za-z])D(?![A-Za-z])/g, String(D));
+}
+
 function resolveValue(f: SampleField, row: LabelRow): string {
+  // Date kind: autofill mode renders today's date formatted per dateFormat;
+  // custom mode prints whatever the customer typed in staticValue verbatim.
+  if (f.kind === 'date') {
+    if (f.dateMode === 'custom') return f.staticValue ?? '';
+    return formatDateToken(new Date(), f.dateFormat || 'DD/MM/YYYY');
+  }
   if (f.kind === 'text') {
     // Text fields are always static, but support {placeholder} interpolation.
     return interpolateTemplate(f.staticValue ?? '', row);

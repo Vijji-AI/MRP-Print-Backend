@@ -15,12 +15,25 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireAdmin);
 
+// ---------- Strong-password Zod (mirrors frontend validatePassword) ----------
+//
+// 8+ chars, at least one uppercase letter, one digit, one symbol.
+// This is defense-in-depth: the same rules the UI shows so API-direct callers
+// can't bypass them. Reused for every place an admin sets a password
+// (customer create, admin create, password reset on either kind of account).
+const strongPassword = z.string()
+  .min(8,  'Password must be at least 8 characters.')
+  .max(200, 'Password is too long.')
+  .regex(/[A-Z]/, 'Password must contain at least one uppercase letter.')
+  .regex(/[0-9]/, 'Password must contain at least one number.')
+  .regex(/[^A-Za-z0-9]/, 'Password must contain at least one symbol (e.g. ! @ # $ %).');
+
 // ---------- Customers ----------
 
 const customerCreateSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().toLowerCase(),
-  password: z.string().min(6).max(200),
+  password: strongPassword,
   organization: z.string().max(120).optional(),
   phone: z.string().max(40).optional(),
 });
@@ -222,7 +235,7 @@ router.get('/prints', async (req, res, next) => {
 const adminCreateSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().toLowerCase(),
-  password: z.string().min(6).max(200),
+  password: strongPassword,
 });
 
 router.get('/admins', async (req, res, next) => {
@@ -272,7 +285,7 @@ router.delete('/admins/:id', async (req, res, next) => {
 // ---------- Password reset ----------
 
 const resetPasswordSchema = z.object({
-  password: z.string().min(6, 'Password must be at least 6 characters').max(200),
+  password: strongPassword,
 });
 
 // Customer password reset — any admin can do this.

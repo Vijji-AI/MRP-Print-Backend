@@ -17,9 +17,18 @@ const fieldSchema = z.object({
   label: z.string(),
   staticValue: z.string().optional(),
   columnKey: z.string().optional(),
-  fontSize: z.number().int().optional(),
+  // Allow any positive font size — the editor now accepts custom px (incl. <8).
+  // Capped at 200 to defend against truly malformed inputs.
+  fontSize: z.number().int().min(1).max(200).optional(),
   bold: z.boolean().optional(),
   align: z.enum(['left', 'center', 'right']).optional(),
+  // Per-line layout extras (all optional, all bounded as sanity caps).
+  leftMargin: z.number().int().min(0).max(500).optional(),
+  letterSpacing: z.number().min(-10).max(50).optional(),
+  // Date-field controls — only meaningful when kind === 'date', but we don't
+  // refuse them on other kinds (cheap, and stripping them out is a UI concern).
+  dateMode: z.enum(['today', 'custom']).optional(),
+  dateFormat: z.string().max(40).optional(),
 });
 
 const sampleBodySchema = z.object({
