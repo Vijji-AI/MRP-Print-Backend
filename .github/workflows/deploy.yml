@@ -1,0 +1,139 @@
+# PrintMRP backend — CI/CD for Hostinger VPS (PM2 deploy)
+#
+# Flow on every push to `master`:
+#   1. Job `build`   — typecheck + tsc build on a clean Ubuntu runner
+#   2. Job `deploy`  — SSH into the VPS, pull, install, migrate, build, PM2 reload, /health probe
+#
+# Required GitHub repo secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST          - VPS public IP or hostname  (e.g. 93.127.45.120)
+#   VPS_USER          - SSH user                   (e.g. root)
+#   VPS_SSH_KEY       - Private SSH key            (whole `-----BEGIN OPENSSH PRIVATE KEY-----` block)
+#   VPS_PROJECT_PATH  - Absolute path on the VPS   (e.g. /root/print-api-new)
+# Optional:
+#   VPS_PORT          - SSH port if non-22         (e.g. 2222)
+#
+# On the VPS (one-time):
+#   - Generate a deploy keypair:   ssh-keygen -t ed25519 -f ~/.ssh/gh_deploy -N ""
+#   - Append the public half to:   ~/.ssh/authorized_keys
+#   - Copy the private half into the VPS_SSH_KEY secret.
+#   - `.env` must already exist at $VPS_PROJECT_PATH/.env (gitignored, not managed by CI).
+
+name: Deploy to Hostinger VPS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        env:
+          # Prisma needs DATABASE_URL set at generate-time, but does not connect.
+          DATABASE_URL: "postgresql://placeholder:placeholder@localhost:5432/placeholder?schema=public"
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  deploy:
+    name: Deploy to VPS
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: SSH deploy + PM2 reload + /health probe
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+
+            # Trim any trailing/leading whitespace or CR/LF that may have crept
+            # into the GitHub secret. Without this, a stray newline in the
+            # secret value makes `cd` fail with "no such file or directory".
+            PROJECT_PATH_RAW="${{ secrets.VPS_PROJECT_PATH }}"
+            PROJECT_PATH=$(printf '%s' "$PROJECT_PATH_RAW" | tr -d '\r\n' | xargs)
+            APP_NAME="printmrp-api"
+            HEALTH_URL="http://127.0.0.1:8976/health"
+
+            echo "==> cd $PROJECT_PATH"
+            if [ ! -d "$PROJECT_PATH" ]; then
+              echo "ERROR: $PROJECT_PATH does not exist on the VPS."
+              echo "Run the one-time setup (clone repo + place .env) before re-running this workflow."
+              exit 1
+            fi
+            cd "$PROJECT_PATH"
+
+            echo "==> Pulling latest master (hard reset to origin)"
+            git fetch origin master
+            git checkout master
+            git reset --hard origin/master
+            COMMIT_SHA=$(git rev-parse --short HEAD)
+            echo "  deploying $COMMIT_SHA"
+
+            echo "==> npm ci"
+            npm ci
+
+            echo "==> prisma generate"
+            npx prisma generate
+
+            echo "==> prisma migrate deploy"
+            npx prisma migrate deploy
+
+            echo "==> tsc build"
+            npm run build
+
+            echo "==> PM2 (re)start"
+            mkdir -p logs
+            if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
+              pm2 restart "$APP_NAME" --update-env
+            else
+              pm2 start ecosystem.config.cjs
+              pm2 save
+            fi
+
+            echo "==> Health check ($HEALTH_URL)"
+            ATTEMPTS=15
+            for i in $(seq 1 $ATTEMPTS); do
+              response=$(curl -fsS --max-time 5 "$HEALTH_URL" || echo "")
+              if echo "$response" | grep -q '"ok":true'; then
+                echo "Health check passed on attempt $i:"
+                echo "$response"
+                echo "Deploy of $COMMIT_SHA succeeded."
+                exit 0
+              fi
+              echo "  attempt $i/$ATTEMPTS: not healthy yet, sleeping 2s..."
+              sleep 2
+            done
+
+            echo "Health check FAILED after $ATTEMPTS attempts. Last 50 lines of PM2 logs:"
+            pm2 logs "$APP_NAME" --lines 50 --nostream || true
+            exit 1

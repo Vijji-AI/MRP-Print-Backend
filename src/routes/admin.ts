@@ -7,6 +7,7 @@ import { conflict, notFound } from '../lib/errors';
 import { requireAuth, requireAdmin } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { generateSampleFromImage } from '../lib/visionGenerate';
+import { readPricing, writePricing, pricingSchema } from './pricing';
 
 const router = Router();
 // requireAuth must run first so req.auth is populated before requireAdmin
@@ -14,12 +15,25 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireAdmin);
 
+// ---------- Strong-password Zod (mirrors frontend validatePassword) ----------
+//
+// 8+ chars, at least one uppercase letter, one digit, one symbol.
+// This is defense-in-depth: the same rules the UI shows so API-direct callers
+// can't bypass them. Reused for every place an admin sets a password
+// (customer create, admin create, password reset on either kind of account).
+const strongPassword = z.string()
+  .min(8,  'Password must be at least 8 characters.')
+  .max(200, 'Password is too long.')
+  .regex(/[A-Z]/, 'Password must contain at least one uppercase letter.')
+  .regex(/[0-9]/, 'Password must contain at least one number.')
+  .regex(/[^A-Za-z0-9]/, 'Password must contain at least one symbol (e.g. ! @ # $ %).');
+
 // ---------- Customers ----------
 
 const customerCreateSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().toLowerCase(),
-  password: z.string().min(6).max(200),
+  password: strongPassword,
   organization: z.string().max(120).optional(),
   phone: z.string().max(40).optional(),
 });
@@ -32,6 +46,8 @@ const customerUpdateSchema = z.object({
   maxSamples: z.number().int().min(0).max(10000).optional(),
   // 0 = nobody can log in (effectively locks the account). Upper bound sanity.
   maxDevices: z.number().int().min(0).max(100).optional(),
+  // Allow this customer to upload PDFs and use Gemini-powered table extraction.
+  allowPdf: z.boolean().optional(),
 });
 
 const subscriptionSchema = z.object({
@@ -78,6 +94,7 @@ router.put('/customers/:id', validate(customerUpdateSchema), async (req, res, ne
         phone: body.phone === undefined ? c.phone : body.phone ?? null,
         maxSamples: body.maxSamples === undefined ? c.maxSamples : body.maxSamples,
         maxDevices: body.maxDevices === undefined ? c.maxDevices : body.maxDevices,
+        allowPdf: body.allowPdf === undefined ? c.allowPdf : body.allowPdf,
       },
     });
     res.json(customerDTO(updated));
@@ -218,7 +235,7 @@ router.get('/prints', async (req, res, next) => {
 const adminCreateSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().toLowerCase(),
-  password: z.string().min(6).max(200),
+  password: strongPassword,
 });
 
 router.get('/admins', async (req, res, next) => {
@@ -268,7 +285,7 @@ router.delete('/admins/:id', async (req, res, next) => {
 // ---------- Password reset ----------
 
 const resetPasswordSchema = z.object({
-  password: z.string().min(6, 'Password must be at least 6 characters').max(200),
+  password: strongPassword,
 });
 
 // Customer password reset — any admin can do this.
@@ -295,6 +312,17 @@ router.post('/admins/:id/reset-password', validate(resetPasswordSchema), async (
     await prisma.admin.update({ where: { id: a.id }, data: { passwordHash } });
     res.json({ ok: true });
   } catch (e) { next(e); }
+});
+
+// ---------- Pricing config ----------
+
+router.get('/pricing', (_req, res) => {
+  res.json(readPricing());
+});
+
+router.put('/pricing', validate(pricingSchema), (req, res) => {
+  writePricing(req.body);
+  res.json(req.body);
 });
 
 // ---------- Dashboard ----------

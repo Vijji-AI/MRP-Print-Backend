@@ -28,15 +28,19 @@ model Customer {
   // default to 2; admin can override per-customer. Enforced at login time and
   // each authenticated request verifies the device record still exists.
   maxDevices         Int        @default(2)
+  // When true, this customer may upload PDFs in PrintFlow and use Gemini to
+  // extract table data from them. Off by default; admin enables per-customer.
+  allowPdf           Boolean    @default(false)
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
-  samples    Sample[]
-  payments   Payment[]
-  settings   Settings?
-  printRuns  PrintRun[]
-  devices    Device[]
-  paperSizes PaperSize[]
+  samples               Sample[]
+  payments              Payment[]
+  settings              Settings?
+  printRuns             PrintRun[]
+  devices               Device[]
+  paperSizes            PaperSize[]
+  subscriptionRequests  SubscriptionRequest[]
 }
 
 // Customer-owned custom paper / label sizes. Built-in sizes (A4, Letter,
@@ -121,6 +125,25 @@ model Settings {
   printer    String   @default("System default")
   copies     Int      @default(1)
   updatedAt  DateTime @updatedAt
+}
+
+// Subscription upgrade requests submitted by customers when their trial expires
+// or when they need to change plan. Admin reviews these in the Subscriptions panel.
+model SubscriptionRequest {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  maxSamples Int
+  maxDevices Int
+  planMonths Int
+  note       String?
+  // pending | approved | rejected
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([status])
 }
 
 model PrintRun {
